@@ -1,0 +1,783 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Categorizing Hate Speech on Twitter
+
+## Introduction and Problem set
+
+  The political climate in the United States of America is the most divisive it's been in recent memory. The major political parties have driftered further and further apart and thier voting bases have closely followed. As such, many viewpoints which may have seemed to be in the countries rear view mirror have been brought back to the forefront of our collective consciousness. With the advent of social media, the average American has a greater abilty to state thier beliefs openly. As such, hate speech and racism are more openly discussed and have become a center pieces in not only poilitcal discussion, but our daily lives. 
+  
+  With the increased return of many racial supremacist viewpoints, many have asked why social media providers have not taken greater strides in protecting individual rights. A commonality in these companies response in identifying and catorigorizing hate speech as well a threats against ethnic groups within their platforms. From this defense, we looked to determine how difficult it is in identifying these viewpoints on Twitter.
+  
+  Twitter was chose for numerous reasons. First is the robust and open API provided by Twitter that allows research to be conducted quickly and succinctly. Second was the large contingent of racially charged users, many who openly identify as "White Nationalist," on the platform. Thirdly, twitter's data is easily linked between users for social network analysis. Finally, Twitters format of 240 characters per post allow us to analysis numerous individual posts quicker than facebook, reddit, or screenscraping a website. 
+  
+  Initially this project was meant to test if a given Tweet contains Hate speech against ethnic groups. While hate speech can be a more broad labeling for negative speech against and individual or group's race, ethnicity, national origin, gender, religion, or sexual orientation(https://definitions.uslegal.com/h/hate-speech/), we have decisded to focus soley on race and ethnicity. The only caveat to that is speech against individuals of Jewish religion or descent. We chose to include Jewish people as it is sometimes viewed as a religious group and others as an ethnic minority. Given the history of anti-semitisim in the United States we felt it would fit our auspices.
+  
+  In order to do so we utilized screen scraping to pull a database of racial slurs from RSDB.org and conduct a dictionary based search of Tweets based on those words. From these Tweets we manually curated Tweets to ensure explicit racism was use. From the curated tweets we utilized machine learning to determine if a tweet is using hatespeech. 
+
+  Although the machine learning algorithm worked at a high success rate (approximately 88% accuracy on the test case), we felt that we needed more to analyize in order to meet the requirements of the project. From the algorithm we decided on use the three most common slurs per ethinic group, which in our case was White, Black, Hispanic, Asian, and Jewish, in order to do analysis on which group is discriminated against the most, if this is adjusted regionally, and if those who use racial or discriminatory langauge have similar networking patterns amongst them.
+
+```{r}
+# Libraries needed
+library(rtweet)                # General-purpose Twitter API package
+library(tidytext)              # General-purpose data wrangling
+library(rvest)                 # Parsing of HTML/XML files  
+library(stringr)               # String manipulation
+library(rebus)                 # Verbose regular expressions
+library(lubridate)             # Eases DateTime manipulation
+library(dplyr)                 # grep/text cleaning
+library(topicmodels)           # General Purpose Topic Modeling
+library(stm)                   # Special Topic Modeling
+library(ggplot2)               # Visualization Package
+library(caret)                 # Multi-purpose Machine Learning
+library(kernlab)               # Kernel-based machine learning
+library(tm)                    # Corpus Manipulation
+library(splitstackshape)       # Another data manipulation/cleaning package
+library(e1071)                 # Support Machine Vectors 
+library(SnowballC)             # Stemming and corpus manipulation
+library(wordcloud)             # Simple creation of word clouds
+```
+
+  We utilized a relatively large number of different libraries and packages within R which allowed for screen scraping, utilizing Twitter APIs, as well well as manipulating that data for ease of use in order to do more thorough analysis and machine learning.
+
+## Webscraping
+
+  In order to intially flag tweets for hate speech we decided we needed to build criteria to look at the words and context in order to compare against. The first, and arguably most straight forward method is to build a dictionary of known racial slurs. Luckily for us, there are a number of webages have this information for free. The Racial slur Database (RSDB) at http://www.rsdb.org/full is the most robust set with 2655 slurs. Unfortunately not all of these are explicit, but it is the most complete. We used the "rvest" package to pull the table into a dataframe for our manipulation. 
+
+  Eventually we culled a number of words that were not particulary easy to distinguish, for example banana, which could have a racial conentation, but are also a very typical word in english vanacular.
+
+```{r}
+SlurDB <- read_html('http://www.rsdb.org/full')
+
+SlurDB %>%
+  html_node("slur_2 td") %>%        # Pull information from the HTML node titled "slur_2 td"
+  html_text()                       # convert the node into text
+
+# After we pull the data we convert it to and HTML table for manipulation using rvest
+
+SlurDB %>%
+  html_nodes("table") %>%           # convert the node/text to a table
+  .[[1]] %>%
+  html_table() %>%                  # convert the table to a data frame
+  select(Slur) -> Slurs             # only select the column Slur and save it as "Slurs" 
+
+Slurs  
+```
+
+  Once we select the slur column and unnest the tokens so that we can move to text preprocessing.
+
+  Finally, we wrote this to a dataframe to a CSV file so that we have it for later in case the site changes drastically enough that our screen scraping is rendered useless, or we move our programing inviroment due to a hardware failure.
+
+```{r, results='hide'}
+write.csv(Slurs, file = "RSDB.csv")
+```
+
+  Initually we were planning on using a dataset of random tweets read from the stream. This became an issue with identifying racist tweets due to the limited amount of Tweets which contained a slur. Upon further research on the subject of racism on Twitter, we learned that approximately 1:150,000 tweets contained explicit slurs (https://www.demos.co.uk/files/DEMOS_Anti-social_Media.pdf?1391774638), and of those, only about 15% of slurs are being used in a deragitory manner. Take, for example, the term Redneck. It can be used to descriminate against Americans of European decent. However it is also championed by many whites as seen in the Blue Collar comedy Tour, in which Jeff Foxworthy has an exstensive comedic set based around the word.
+
+## Application Programing Interface (API)
+
+  In our attempt to circumvent this limitation we decided to utilize a dictionary based search. With the dictionary dataframe mentioned previously, we used a truncated list, leaving only the most explicit slurs first (i.e. nigger,chink, spic) in order to pull a higher percentage of racist Tweets. In doing so this took us from the original 2655 Slurs down to only 405, which is substantially more manageable.
+
+```{r, results='hide'}
+
+# read the hand culled list of slurs
+Slurs <- read.csv("file:///C:/Users/Joseph/Documents/R/RSDB v2.csv")
+
+Slurs <- Slurs %>%                                          # look at only the slur comulmn in file
+  select(Slur) 
+
+slur_tweets<-as.data.frame(NULL)                            # empty data-frame to store tweets
+
+
+for(i in 1:nrow(Slurs)){                                    # Loop through all Slurs
+  tweets <- search_tweets(as.character(Slurs$Slur[i]),      # Search each slur word 
+                        n = 10,                             # Pull the first 10 matches
+                        include_rts = FALSE,                # Do not pull retweets,
+                        "lang:en",                          # Only english language tweets
+                        geocode = lookup_coords("usa"),     # from the United States
+                        type ="recent")                     # only the most recent tweets
+  
+  # add the tweet that meats the above criteria into a data frame for storage.
+  slur_tweets <- rbind(slur_tweets, tweets)                   
+}
+
+# Perminantly save the tweets to a CSV file
+write.csv(slur_tweets$text, file = "slur_tweets.csv")
+
+```
+
+We decided to only look for 10 instances of use from every word simply because at approximately 400 Slurs, any more than 4000th Tweets would be difficult to sift through by hand. Luckily, numerous words did not show up in any sortof racial way even with our culled list, so this allowed us to reduce the list even more. From the 10 we seperated those instances were the word was being explicitly used negatively and those when the word was in a racial way, but not negatively, such as our Jeff Foxworthy example above.
+
+
+## Machine Learning
+
+  From this list of Tweets we attemped to manually cull Tweets to determine if a slur was being used in a negative or derogitory way. This method was used to create a training set for our machine learning algorithm as well as a testing set. After we research text analysis ML algorithims, we determined Support Vector Machines (SVM) from the Caret Package in R would work the best for our purpose. SVMs being a supervised ML with specialization into binary classification, which for us is Hate Speech or not Hate Speech.
+
+
+```{r, echo = FALSE}
+# read in the traning data from file
+TrainingDoc <- readLines("file:///C:/Users/Joseph/Documents/R/RTrain.txt")
+
+# read the training document into a corupus
+train <- Corpus(VectorSource(TrainingDoc))
+
+# cleaning the data
+train <- tm_map(train, content_transformer(stripWhitespace))        # removes whitespace from corpus
+train <- tm_map(train, content_transformer(tolower))                # convert the corpus to lowercase
+train <- tm_map(train, content_transformer(removeNumbers))          # removes numbers from corpus
+train <- tm_map(train, content_transformer(removePunctuation))      # removes punctuation from corpus
+
+# convert the training courpus to a document term matrix
+train.dtm <- as.matrix(DocumentTermMatrix(train, control=list(wordLengths=c(1,Inf))))
+
+# read in the testing data from file
+TestingDoc <- readLines("file:///C:/Users/Joseph/Documents/R/RTest.txt")
+
+# read the testing document into a corupus
+test <- Corpus(VectorSource(TestingDoc))
+
+# cleaning the data 
+test <- tm_map(test, content_transformer(stripWhitespace))          # removes whitespace from corpus
+test <- tm_map(test, content_transformer(tolower))                  # convert the corpus to lowercase
+test <- tm_map(test, content_transformer(removeNumbers))            # removes numbers from courpus
+test <- tm_map(test, content_transformer(removePunctuation))        # removes punctuation from corpuse
+
+# convert the testing corpus to a document term matrix
+test.dtm <- as.matrix(DocumentTermMatrix(test, control=list(wordLengths=c(1,Inf))))
+
+# determining the intersectiong between the two corpuses (corpii?)
+train.df <- data.frame(train.dtm[,intersect(colnames(train.dtm), colnames(test.dtm))])
+test.df  <- data.frame(test.dtm[,intersect(colnames(test.dtm), colnames(train.dtm))])
+
+# label the corpus portions correctly for racist vs non-racist
+label.df           <- data.frame(row.names(train.df))
+colnames(label.df) <- c("filenames")
+label.df           <- cSplit(label.df, 'filenames', sep="_", type.convert=FALSE)
+train.df$corpus    <- label.df$filenames_1
+test.df$corpus     <- c("Neg")
+
+# run the Support Vector Machine(ksvm) on the training set.
+df.train           <- train.df
+df.test            <- train.df
+df.model           <- ksvm(corpus~., data= df.train, kernel="rbfdot")
+
+# run the SVM model created above on the test set
+df.pred            <- predict(df.model, df.test)
+
+# create a confusion matrix of the results
+con.matrix         <- caret::confusionMatrix(as.factor(df.pred), as.factor(df.test$corpus))
+
+# print the confusion matrix to see the accuracy of the model 
+print(con.matrix)  # of 60 examples in the test set, it correctly identified 
+
+df.test            <- test.df
+df.pred            <- predict(df.model, df.test)
+results            <- as.data.frame(df.pred)
+rownames(results)  <- rownames(test.df)
+print(results)
+
+```
+
+  The training tweets used were hand curated to contain the most explicit racism, as well as racism against multiple ethnic or racial groups. We chose 200 texts, 100 of which contained hate speech, and 100 which did not. Of those that did not, the slur may or may not have been present so that the algorithm can understand that not all slurs are used in a derogitory manner in our modern venacular.
+
+  As we can see by our confusion matrix, our algorthim is 96% accurate with a 95% Confidence Interval between 0.9227 and 0,9826 when using the test set. From a statisical point of view, the model is highly accurate wiht a P-Value of 2.2 x 10^(-16). 
+
+  Although this means we have a strong model, there are some caveats. First, we did not identify implicit racism, or racism using words that could be used in a normal fashion, like banana which we mentioned earlier. Second we have an issue with algorithm bias as both the test set and training set were created by hand. Since hate speech can be subjective to a certain degree, what one person would decide is versus another may vary, thus changing how the algorithm identifies hate speech.
+
+## Topic Modeling, Sentiment Analysis and Social Network Analysis
+
+### Topic Modeling
+
+  With our algorithm in place, we decided to do more in depth analysis on the content of the Tweets and any trends that may arise. Our first thought was to identify which order of severity are ethinic groups discriminated against. Due to the large variety of slurs to be evaluated, and rate limiting causing a bias in how tweets are pulled and searched, we decided to look through each ethnic group inidivually and determine the three most frequently used slur. From each groups top three, we decided to compile a single list for analysis. 
+
+```{r, results = 'hide'}
+#read in selected slur words. I further filtered Joe's selection. Filter out some ambiguous words like banana. 
+slurwords <- read.csv("file:///C:/Users/Joseph/Documents/R/RSDB white.csv")
+
+#loop to concatenate and search posts
+#concatenate first 20 keywords into a giant string
+str1              <- '"'
+space             <- " "
+ORword            <- "OR"
+totalstringloop   <- ''
+
+for(word in slurwords$Slur[]){
+  slurwordstring  <- paste(str1,word,str1,space, ORword,space,sep="")
+  totalstringloop <- paste(totalstringloop,slurwordstring)
+}
+#remove the last OR to get final totalstring
+totalstringloop   <- substring(totalstringloop,1,nchar(totalstringloop)-3)
+#check number of characters in the string, maximum character length is 500 for search_tweet function
+nchar(totalstringloop)
+
+#search_tweet with stringed keyword
+whiteracisttweet  <- search_tweets(q=totalstringloop,
+                                   "lang:en",
+                                   geocode=lookup_coords("usa"),
+                                   n=10000, include_rts=FALSE, 
+                                   type="recent", 
+                                   retryonratelimit=TRUE)
+
+#before this step, i already pulled down tweets containing racial slurs, I call the tweets dataset trulyracisttweet
+trulyracisttweet   <- whiteracisttweet
+
+#tokenize and see top frequency words, sentiment and topic
+tidy_trulyracisttweet <- trulyracisttweet%>%
+  dplyr::select(created_at,text) %>%
+  unnest_tokens("word",text)
+
+#remove stop words
+data("stop_words")
+tidy_trulyracisttweet <- tidy_trulyracisttweet %>%
+  anti_join(stop_words)
+
+#remove numbers
+tidy_trulyracisttweet <- tidy_trulyracisttweet[-grep("\\b\\d+\\b", 
+                                                     tidy_trulyracisttweet$word),]
+
+#remove whitespaces
+tidy_trulyracisttweet$word <- gsub("\\s+",
+                                   "",
+                                   tidy_trulyracisttweet$word)
+
+# stemming to the root words
+tidy_trulyracisttweet <- tidy_trulyracisttweet %>%
+  mutate_at("word", funs(wordStem((.), language="en")))
+
+#change slurword list to lower letters for easier comparison
+#this is important, because our slur database use capital letters, and grep won't recognize unless you change it to lower
+slurwords$Slur <- tolower(slurwords$Slur)
+
+#count frequency of each slur word
+#create empty dataframe which contains slur word and its count in the 18000 tweets of 10 keywords
+#make stringasfactors=false or there will be some problem
+slurvocab <- data.frame(vocab = character(nrow(slurwords)), 
+                        count = numeric(nrow(slurwords)), 
+                        stringsAsFactors = FALSE)
+i <- 1
+
+for(each in slurwords$Slur){
+  slurvocab$vocab[i]=each
+  #grep returns the indices of rows containing the slur
+  rownumber = grep(each,tidy_trulyracisttweet$word)
+  #number of rows will be the frequencies of the slur
+  slurvocab$count[i] = length(rownumber)
+  i <- i+1
+}
+```
+
+```{r, echo=FALSE}
+#Barplot
+selectedslurvocab = slurvocab%>%
+  arrange(desc(count)) %>%
+  top_n(10)
+
+ggplot(selectedslurvocab, aes(reorder(vocab,-count), count, fill=factor(vocab))) + 
+  geom_bar(stat="identity")+
+  labs(x="slur", y="count",
+    title="Most commonly used slurwords for whites")
+```
+
+  From this we can see that redneck, gringo, and guido are the most common terms against white Americans. This is especially beneficial considering the diffefence in count between guido, or least freqent of the top three, and wigger, the number four in our frequency chart. We found that while redneck can be used in a less threatening matter, both gringo and guido usually were used in a negative or threatening manner.
+
+```{r, echo = FALSE, results='hide'}
+#read in selected slur words. I further filtered Joe's selection. Filter out some ambiguous words like banana. 
+slurwords <- read.csv("file:///C:/Users/Joseph/Documents/R/RSDB black.csv")
+
+#loop to concatenate and search posts
+#concatenate first 20 keywords into a giant string
+str1              <- '"'
+space             <- " "
+ORword            <- "OR"
+totalstringloop   <- ''
+
+for(word in slurwords$Slur[]){
+  slurwordstring  <- paste(str1,word,str1,space, ORword,space,sep="")
+  totalstringloop <- paste(totalstringloop,slurwordstring)
+}
+#remove the last OR to get final totalstring
+totalstringloop   <- substring(totalstringloop,1,nchar(totalstringloop)-3)
+#check number of characters in the string, maximum character length is 500 for search_tweet function
+nchar(totalstringloop)
+
+#search_tweet with stringed keyword
+blackracisttweet  <- search_tweets(q=totalstringloop,
+                                   "lang:en",
+                                   geocode=lookup_coords("usa"),
+                                   n=10000, include_rts=FALSE, 
+                                   type="recent", 
+                                   retryonratelimit=TRUE)
+
+#before this step, i already pulled down tweets containing racial slurs, I call the tweets dataset trulyracisttweet
+trulyracisttweet   <- blackracisttweet
+
+#tokenize and see top frequency words, sentiment and topic
+tidy_trulyracisttweet <- trulyracisttweet%>%
+  dplyr::select(created_at,text) %>%
+  unnest_tokens("word",text)
+
+#remove stop words
+data("stop_words")
+tidy_trulyracisttweet <- tidy_trulyracisttweet %>%
+  anti_join(stop_words)
+
+#remove numbers
+tidy_trulyracisttweet <- tidy_trulyracisttweet[-grep("\\b\\d+\\b", 
+                                                     tidy_trulyracisttweet$word),]
+
+#remove whitespaces
+tidy_trulyracisttweet$word <- gsub("\\s+",
+                                   "",
+                                   tidy_trulyracisttweet$word)
+
+# stemming to the root words
+tidy_trulyracisttweet <- tidy_trulyracisttweet %>%
+  mutate_at("word", funs(wordStem((.), language="en")))
+
+#change slurword list to lower letters for easier comparison
+#this is important, because our slur database use capital letters, and grep won't recognize unless you change it to lower
+slurwords$Slur <- tolower(slurwords$Slur)
+
+#count frequency of each slur word
+#create empty dataframe which contains slur word and its count in the 18000 tweets of 10 keywords
+#make stringasfactors=false or there will be some problem
+slurvocab <- data.frame(vocab = character(nrow(slurwords)), 
+                        count = numeric(nrow(slurwords)), 
+                        stringsAsFactors = FALSE)
+i <- 1
+
+for(each in slurwords$Slur){
+  slurvocab$vocab[i]=each
+  #grep returns the indices of rows containing the slur
+  rownumber = grep(each,tidy_trulyracisttweet$word)
+  #number of rows will be the frequencies of the slur
+  slurvocab$count[i] = length(rownumber)
+  i <- i+1
+}
+```
+
+With Thug.
+```{r, echo=FALSE}
+#Barplot
+selectedslurvocab = slurvocab%>%
+  arrange(desc(count)) %>%
+  top_n(10)
+
+ggplot(selectedslurvocab, aes(reorder(vocab,-count), count, fill=factor(vocab))) + 
+  geom_bar(stat="identity")+
+  labs(x="slur", y="count",
+    title="Most commonly used slurwords for Blacks")
+```
+
+  When we initially tested against slurs and hate speech against black Americans, the word "thug" was far and away the most common use of the word. This, however, had some restrictions in the analysis because while thug is commonly used as a dog whistle against young black men, it was nearly impossible to correct against with our model if each instance was being used as an standin for a different black slur or just a person of any race or ethnicity. Because of this we decided to have a more accurate analysis by dropping the word off our top three.
+
+```{r}
+#Barplot
+selectedslurvocab = slurvocab%>%
+  arrange(desc(count)) %>%
+  top_n(10)
+
+ggplot(selectedslurvocab, aes(reorder(vocab,-count), count, fill=factor(vocab))) + 
+  geom_bar(stat="identity")+
+  labs(x="slur", y="count",
+    title="Most commonly used slurwords for Blacks (without thug)")
+```
+
+  Without the word "thug," we can see two common undeniable words, "nigger and coon". Both have a log negative history in American history, so it is not particularly surprising of thier commonality. While the word "nigger" has some commonality of being used by black Americans as a way of taking the power out of the word, it has been our observation that the variation of the word ending in "ga," is substantially more common in that regard, and the hard "r" ending is typically used in a hateful way. 
+  
+  Also of note, in the Tweets that utilized for training our machine learning algorithm, when the word "nigger" was used it was almost always in a threatening manner. For example, the following are just a small portion of the use of the word;
+  
+  "Shoot that nigger"
+  "Retarded nigger"
+  "He tellin u... u not just a nigga... u a nigger.. had to add that extra letter"
+  
+  The word is often used to negatively describe individuals of other racial groups as well. For example, following the murder of Jamal Khashoggi, numerous individuals use the word in describing people of middle eastern descent.
+  
+  "I would never get caught in public with a sand nigger"
+  "Send this sand nigger back to her sharia country"
+  "I think ur sand monkey king should invest in better chainsaws to murder more people"
+
+```{r, echo=FALSE, results='hide'}
+#read in selected slur words. I further filtered Joe's selection. Filter out some ambiguous words like banana. 
+slurwords <- read.csv("file:///C:/Users/Joseph/Documents/R/RSDB hispanic.csv")
+
+#loop to concatenate and search posts
+#concatenate first 20 keywords into a giant string
+str1              <- '"'
+space             <- " "
+ORword            <- "OR"
+totalstringloop   <- ''
+
+for(word in slurwords$Slur[]){
+  slurwordstring  <- paste(str1,word,str1,space, ORword,space,sep="")
+  totalstringloop <- paste(totalstringloop,slurwordstring)
+}
+#remove the last OR to get final totalstring
+totalstringloop   <- substring(totalstringloop,1,nchar(totalstringloop)-3)
+#check number of characters in the string, maximum character length is 500 for search_tweet function
+nchar(totalstringloop)
+
+#search_tweet with stringed keyword
+hispracisttweet   <- search_tweets(q=totalstringloop,
+                                   "lang:en",
+                                   geocode=lookup_coords("usa"),
+                                   n=10000, include_rts=FALSE, 
+                                   type="recent", 
+                                   retryonratelimit=TRUE)
+
+#before this step, i already pulled down tweets containing racial slurs, I call the tweets dataset trulyracisttweet
+trulyracisttweet   <- hispracisttweet
+
+#tokenize and see top frequency words, sentiment and topic
+tidy_trulyracisttweet <- trulyracisttweet%>%
+  dplyr::select(created_at,text) %>%
+  unnest_tokens("word",text)
+
+#remove stop words
+data("stop_words")
+tidy_trulyracisttweet <- tidy_trulyracisttweet %>%
+  anti_join(stop_words)
+
+#remove numbers
+tidy_trulyracisttweet <- tidy_trulyracisttweet[-grep("\\b\\d+\\b", 
+                                                     tidy_trulyracisttweet$word),]
+
+#remove whitespaces
+tidy_trulyracisttweet$word <- gsub("\\s+",
+                                   "",
+                                   tidy_trulyracisttweet$word)
+
+# stemming to the root words
+tidy_trulyracisttweet <- tidy_trulyracisttweet %>%
+  mutate_at("word", funs(wordStem((.), language="en")))
+
+#change slurword list to lower letters for easier comparison
+#this is important, because our slur database use capital letters, and grep won't recognize unless you change it to lower
+slurwords$Slur <- tolower(slurwords$Slur)
+
+#count frequency of each slur word
+#create empty dataframe which contains slur word and its count in the 18000 tweets of 10 keywords
+#make stringasfactors=false or there will be some problem
+slurvocab <- data.frame(vocab = character(nrow(slurwords)), 
+                        count = numeric(nrow(slurwords)), 
+                        stringsAsFactors = FALSE)
+i <- 1
+
+for(each in slurwords$Slur){
+  slurvocab$vocab[i]=each
+  #grep returns the indices of rows containing the slur
+  rownumber = grep(each,tidy_trulyracisttweet$word)
+  #number of rows will be the frequencies of the slur
+  slurvocab$count[i] = length(rownumber)
+  i <- i+1
+}
+```
+
+
+```{r, echo=FALSE}
+#Barplot
+selectedslurvocab = slurvocab%>%
+  arrange(desc(count)) %>%
+  top_n(10)
+
+ggplot(selectedslurvocab, aes(reorder(vocab,-count), count, fill=factor(vocab))) + 
+  geom_bar(stat="identity")+
+  labs(x="slur", y="count",
+    title="Most commonly used slurwords for Hispanics")
+```
+
+  Surprisingly, the number of Tweets against person of hispanic descent is limited to its counterparts of both the white and black groups. This is particularly interesting given the poltical rhetoric and gains made by othering individuals who are coming from south of the border to destablize America. We assumed these results were 
+
+```{r, echo = FALSE, results='hide'}
+#read in selected slur words. I further filtered Joe's selection. Filter out some ambiguous words like banana. 
+slurwords <- read.csv("file:///C:/Users/Joseph/Documents/R/RSDB asian.csv")
+
+#loop to concatenate and search posts
+#concatenate first 20 keywords into a giant string
+str1              <- '"'
+space             <- " "
+ORword            <- "OR"
+totalstringloop   <- ''
+
+for(word in slurwords$Slur[]){
+  slurwordstring  <- paste(str1,word,str1,space, ORword,space,sep="")
+  totalstringloop <- paste(totalstringloop,slurwordstring)
+}
+#remove the last OR to get final totalstring
+totalstringloop   <- substring(totalstringloop,1,nchar(totalstringloop)-3)
+#check number of characters in the string, maximum character length is 500 for search_tweet function
+nchar(totalstringloop)
+
+#search_tweet with stringed keyword
+asianracisttweet  <- search_tweets(q=totalstringloop,
+                                   "lang:en",
+                                   geocode=lookup_coords("usa"),
+                                   n=10000, include_rts=FALSE, 
+                                   type="recent", 
+                                   retryonratelimit=TRUE)
+
+#before this step, i already pulled down tweets containing racial slurs, I call the tweets dataset trulyracisttweet
+trulyracisttweet   <- asianracisttweet
+
+#tokenize and see top frequency words, sentiment and topic
+tidy_trulyracisttweet <- trulyracisttweet%>%
+  dplyr::select(created_at,text) %>%
+  unnest_tokens("word",text)
+
+#remove stop words
+data("stop_words")
+tidy_trulyracisttweet <- tidy_trulyracisttweet %>%
+  anti_join(stop_words)
+
+#remove numbers
+tidy_trulyracisttweet <- tidy_trulyracisttweet[-grep("\\b\\d+\\b", 
+                                                     tidy_trulyracisttweet$word),]
+
+#remove whitespaces
+tidy_trulyracisttweet$word <- gsub("\\s+",
+                                   "",
+                                   tidy_trulyracisttweet$word)
+
+# stemming to the root words
+tidy_trulyracisttweet <- tidy_trulyracisttweet %>%
+  mutate_at("word", funs(wordStem((.), language="en")))
+
+#change slurword list to lower letters for easier comparison
+#this is important, because our slur database use capital letters, and grep won't recognize unless you change it to lower
+slurwords$Slur <- tolower(slurwords$Slur)
+
+#count frequency of each slur word
+#create empty dataframe which contains slur word and its count in the 18000 tweets of 10 keywords
+#make stringasfactors=false or there will be some problem
+slurvocab <- data.frame(vocab = character(nrow(slurwords)), 
+                        count = numeric(nrow(slurwords)), 
+                        stringsAsFactors = FALSE)
+i <- 1
+
+for(each in slurwords$Slur){
+  slurvocab$vocab[i]=each
+  #grep returns the indices of rows containing the slur
+  rownumber = grep(each,tidy_trulyracisttweet$word)
+  #number of rows will be the frequencies of the slur
+  slurvocab$count[i] = length(rownumber)
+  i <- i+1
+}
+```
+
+
+```{r, echo = FALSE}
+#Barplot
+selectedslurvocab = slurvocab%>%
+  arrange(desc(count)) %>%
+  top_n(10)
+
+ggplot(selectedslurvocab, aes(reorder(vocab,-count), count, fill=factor(vocab))) + 
+  geom_bar(stat="identity")+
+  labs(x="slur", y="count",
+    title="Most commonly used slurwords for Asians")
+```
+
+analysis for Asians
+
+```{r, echo=FALSE, results='hide'}
+#read in selected slur words. I further filtered Joe's selection. Filter out some ambiguous words like banana. 
+slurwords <- read.csv("file:///C:/Users/Joseph/Documents/R/RSDB jewish.csv")
+
+#loop to concatenate and search posts
+#concatenate first 20 keywords into a giant string
+str1              <- '"'
+space             <- " "
+ORword            <- "OR"
+totalstringloop   <- ''
+
+for(word in slurwords$Slur[]){
+  slurwordstring  <- paste(str1,word,str1,space, ORword,space,sep="")
+  totalstringloop <- paste(totalstringloop,slurwordstring)
+}
+#remove the last OR to get final totalstring
+totalstringloop   <- substring(totalstringloop,1,nchar(totalstringloop)-3)
+#check number of characters in the string, maximum character length is 500 for search_tweet function
+nchar(totalstringloop)
+
+#search_tweet with stringed keyword
+asianracisttweet  <- search_tweets(q=totalstringloop,
+                                   "lang:en",
+                                   geocode=lookup_coords("usa"),
+                                   n=10000, include_rts=FALSE, 
+                                   type="recent", 
+                                   retryonratelimit=TRUE)
+
+#before this step, i already pulled down tweets containing racial slurs, I call the tweets dataset trulyracisttweet
+trulyracisttweet   <- asianracisttweet
+
+#tokenize and see top frequency words, sentiment and topic
+tidy_trulyracisttweet <- trulyracisttweet%>%
+  dplyr::select(created_at,text) %>%
+  unnest_tokens("word",text)
+
+#remove stop words
+data("stop_words")
+tidy_trulyracisttweet <- tidy_trulyracisttweet %>%
+  anti_join(stop_words)
+
+#remove numbers
+tidy_trulyracisttweet <- tidy_trulyracisttweet[-grep("\\b\\d+\\b", 
+                                                     tidy_trulyracisttweet$word),]
+
+#remove whitespaces
+tidy_trulyracisttweet$word <- gsub("\\s+",
+                                   "",
+                                   tidy_trulyracisttweet$word)
+
+# stemming to the root words
+tidy_trulyracisttweet <- tidy_trulyracisttweet %>%
+  mutate_at("word", funs(wordStem((.), language="en")))
+
+#change slurword list to lower letters for easier comparison
+#this is important, because our slur database use capital letters, and grep won't recognize unless you change it to lower
+slurwords$Slur <- tolower(slurwords$Slur)
+
+#count frequency of each slur word
+#create empty dataframe which contains slur word and its count in the 18000 tweets of 10 keywords
+#make stringasfactors=false or there will be some problem
+slurvocab <- data.frame(vocab = character(nrow(slurwords)), 
+                        count = numeric(nrow(slurwords)), 
+                        stringsAsFactors = FALSE)
+i <- 1
+
+for(each in slurwords$Slur){
+  slurvocab$vocab[i]=each
+  #grep returns the indices of rows containing the slur
+  rownumber = grep(each,tidy_trulyracisttweet$word)
+  #number of rows will be the frequencies of the slur
+  slurvocab$count[i] = length(rownumber)
+  i <- i+1
+}
+```
+
+```{r, echo=FALSE}
+#Barplot
+selectedslurvocab = slurvocab%>%
+  arrange(desc(count)) %>%
+  top_n(10)
+
+ggplot(selectedslurvocab, aes(reorder(vocab,-count), count, fill=factor(vocab))) + 
+  geom_bar(stat="identity")+
+  labs(x="slur", y="count",
+    title="Most commonly used slurwords for Jews")
+```
+
+
+```{r, echo = FALSE, results='hide'}
+#read in selected slur words. I further filtered Joe's selection. Filter out some ambiguous words like banana. 
+slurwords <- read.csv("file:///C:/Users/Joseph/Documents/R/RSDB top3s.csv")
+
+#loop to concatenate and search posts
+#concatenate first 20 keywords into a giant string
+str1              <- '"'
+space             <- " "
+ORword            <- "OR"
+totalstringloop   <- ''
+
+for(word in slurwords$Slur[]){
+  slurwordstring  <- paste(str1,word,str1,space, ORword,space,sep="")
+  totalstringloop <- paste(totalstringloop,slurwordstring)
+}
+#remove the last OR to get final totalstring
+totalstringloop   <- substring(totalstringloop,1,nchar(totalstringloop)-3)
+#check number of characters in the string, maximum character length is 500 for search_tweet function
+nchar(totalstringloop)
+
+#search_tweet with stringed keyword
+racisttweet       <- search_tweets(q=totalstringloop,
+                                   "lang:en",
+                                   geocode=lookup_coords("usa"),
+                                   n=10000, include_rts=FALSE, 
+                                   type="recent", 
+                                   retryonratelimit=TRUE)
+
+#before this step, i already pulled down tweets containing racial slurs, I call the tweets dataset trulyracisttweet
+trulyracisttweet   <- racisttweet
+
+#tokenize and see top frequency words, sentiment and topic
+tidy_trulyracisttweet <- trulyracisttweet%>%
+  dplyr::select(created_at,text) %>%
+  unnest_tokens("word",text)
+
+#remove stop words
+data("stop_words")
+tidy_trulyracisttweet <- tidy_trulyracisttweet %>%
+  anti_join(stop_words)
+
+#remove numbers
+tidy_trulyracisttweet <- tidy_trulyracisttweet[-grep("\\b\\d+\\b", 
+                                                     tidy_trulyracisttweet$word),]
+
+#remove whitespaces
+tidy_trulyracisttweet$word <- gsub("\\s+",
+                                   "",
+                                   tidy_trulyracisttweet$word)
+
+# stemming to the root words
+tidy_trulyracisttweet <- tidy_trulyracisttweet %>%
+  mutate_at("word", funs(wordStem((.), language="en")))
+
+#change slurword list to lower letters for easier comparison
+#this is important, because our slur database use capital letters, and grep won't recognize unless you change it to lower
+slurwords$Slur <- tolower(slurwords$Slur)
+
+#count frequency of each slur word
+#create empty dataframe which contains slur word and its count in the 18000 tweets of 10 keywords
+#make stringasfactors=false or there will be some problem
+slurvocab <- data.frame(vocab = character(nrow(slurwords)), 
+                        count = numeric(nrow(slurwords)), 
+                        stringsAsFactors = FALSE)
+i <- 1
+
+for(each in slurwords$Slur){
+  slurvocab$vocab[i]=each
+  #grep returns the indices of rows containing the slur
+  rownumber = grep(each,tidy_trulyracisttweet$word)
+  #number of rows will be the frequencies of the slur
+  slurvocab$count[i] = length(rownumber)
+  i <- i+1
+}
+```
+
+```{r, echo = FALSE}
+#Barplot
+selectedslurvocab=slurvocab%>%
+  arrange(desc(count)) %>%
+  top_n(10)
+
+ggplot(selectedslurvocab, aes(reorder(vocab,-count), count, fill=factor(vocab))) + 
+  geom_bar(stat="identity")+
+  labs(x="slurvocab", y="count",
+    title="Top 10 slurwords in searching for 1-10 slurwords in 18000 random tweets")
+```
+
+
+Surpisingly we can see that
+
+Tweets tend to pick up
+```{r}
+#time series plot of tweets
+ts_plot(racisttweet, "hours") + 
+  labs(x = "Date and time",
+       y = "Frequency of tweets",
+       title = "Time series of HateSpeech tweets",
+       subtitle = "Frequency of Twitter statuses calculated in one-hour intervals.")
+```
+```{r}
+# locational maps
+geocoded <- lat_lng(racisttweet)
+library(maps)
+
+par(mar = c(0, 0, 0, 0))
+maps::map("state", lwd = .25)
+with(geocoded, points(lng, lat, pch = 20, cex = .75, col = rgb(0, .3, .7, .75)))
+
+```
+
