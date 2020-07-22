@@ -1,15 +1,10 @@
 # Text_Analysis_Twitter
 
-## Introduction and Problem set
+## Project Type: course Project
+## Problem
+This project aims to analyze the landscape of racist hate speech against different race groups on Twitter. In recent years, with the political climate in the US become more divisive, many viewpoints which may have seems to be in the country's rearview mirror have been brought back to the forefront of collective consciousness. With the advent of social media, the average American has a greater ability to state their beliefs openly. As such, hate speech and racism are more openly discussed and have become a centerpiece in not only political discussion but people’s daily life.
 
-  The political climate in the United States of America is the most divisive it's been in recent memory. The major political parties have driftered further and further apart and thier voting bases have closely followed. As such, many viewpoints which may have seemed to be in the countries rear view mirror have been brought back to the forefront of our collective consciousness. With the advent of social media, the average American has a greater abilty to state thier beliefs openly. As such, hate speech and racism are more openly discussed and have become a center pieces in not only poilitcal discussion, but our daily lives. 
-  
-  With the increased return of many racial supremacist viewpoints, many have asked why social media providers have not taken greater strides in protecting individual rights. A commonality in these companies response in identifying and catorigorizing hate speech as well a threats against ethnic groups within their platforms. From this defense, we looked to determine how difficult it is in identifying these viewpoints on Twitter.
-  
-  Twitter was chose for numerous reasons. First is the robust and open API provided by Twitter that allows research to be conducted quickly and succinctly. Second was the large contingent of racially charged users, many who openly identify as "White Nationalist," on the platform. Thirdly, twitter's data is easily linked between users for social network analysis. Finally, Twitters format of 240 characters per post allow us to analysis numerous individual posts quicker than facebook, reddit, or screenscraping a website. 
-  
-  Initially this project was meant to test if a given Tweet contains Hate speech against ethnic groups. While hate speech can be a more broad labeling for negative speech against and individual or group's race, ethnicity, national origin, gender, religion, or sexual orientation(https://definitions.uslegal.com/h/hate-speech/), we have decisded to focus soley on race and ethnicity. The only caveat to that is speech against individuals of Jewish religion or descent. We chose to include Jewish people as it is sometimes viewed as a religious group and others as an ethnic minority. Given the history of anti-semitisim in the United States we felt it would fit our auspices.
-  
-  In order to do so we utilized screen scraping to pull a database of racial slurs from RSDB.org and conduct a dictionary based search of Tweets based on those words. From these Tweets we manually curated Tweets to ensure explicit racism was use. From the curated tweets we utilized machine learning to determine if a tweet is using hatespeech. 
-
-  Although the machine learning algorithm worked at a high success rate (approximately 88% accuracy on the test case), we felt that we needed more to analyize in order to meet the requirements of the project. From the algorithm we decided on use the three most common slurs per ethinic group, which in our case was White, Black, Hispanic, Asian, and Jewish, in order to do analysis on which group is discriminated against the most, if this is adjusted regionally, and if those who use racial or discriminatory langauge have similar networking patterns amongst them.
+## Approach
+First, to collect the racist tweets, I utilized web scrapping and pulled a database of racial slurs from RSDB.com. And then I conducted a dictionary-based search of Tweets based on those words. From those tweets, I manually curated Tweets to make sure explicit racist words are being used. Next, I calculated a toxicity score for each explicit racist tweet. Based on this, I analyzed the toxicity extent and landscape of racist tweets against different race groups using topic modeling and text networks.
+## Key Techniques: NLP, API, Topic Modeling, Sentiment Analysis, Text Network
+## Language: R
